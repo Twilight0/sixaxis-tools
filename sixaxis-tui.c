@@ -3,12 +3,14 @@
  * with BOLD focus, bottom info line with scroll arrow, `?` help popup,
  * j/k + arrows + PgUp/PgDn navigation, Tab mode cycling, q/Esc quit.
  * Modes: F1 Devices | F2 Pair | F3 Masters | F4 History.
- * USB reads happen only on refresh/pair (cached); redraws never touch USB.
+ * USB rows pair over USB; Bluetooth rows appear only when a controller
+ * is currently connected via Bluetooth (hardware + daemon required).
  */
 #include "sixpair_core.h"
 #include "store.h"
 #include "mac.h"
 #include "version.h"
+#include "btsony.h"
 #include <ncurses.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,9 @@ static const char *mode_names[N_MODES] = {"Devices", "Pair", "Masters", "History
 static sixaxis_dev_t *g_devs = NULL;
 static int g_nd = 0;
 static char g_macs[16][18];
+static btsony_dev_t *g_bt = NULL;
+static int g_nb = 0;
+static int g_usb_dev = 0; /* USB device used by Pair page */
 
 static master_entry_t *g_m = NULL;
 static int g_nm = 0;
@@ -55,6 +60,15 @@ static void reload_devices(void) {
         else
             snprintf(g_macs[i], sizeof g_macs[i], "(unreadable)");
     }
+    /* bluetooth rows appear only with hardware + daemon + live controllers */
+    bt_free(g_bt);
+    g_bt = NULL;
+    g_nb = 0;
+    char reason[128];
+    if (bt_available(reason, sizeof reason))
+        g_nb = bt_list(&g_bt);
+    if (g_usb_dev >= g_nd) g_usb_dev = g_nd - 1;
+    if (g_usb_dev < 0) g_usb_dev = 0;
     unsigned char lm[6];
     if (sixaxis_local_master(lm) == 0)
         mac_format(lm, g_local);
@@ -81,7 +95,7 @@ static void reload_all(void) {
 /* row counts per mode */
 static int nrows(void) {
     switch (g_mode) {
-    case M_DEV: return g_nd ? g_nd : 1;
+    case M_DEV: return g_nd + g_nb ? g_nd + g_nb : 1;
     case M_PAIR: return 5;
     case M_MAST: return g_nm ? g_nm : 1;
     case M_HIST: return g_nh ? g_nh : 1;
@@ -127,13 +141,17 @@ static void update_info(int lines) {
     case M_DEV: {
         char pm[18] = "none";
         if (g_have_pending) mac_format(g_pending, pm);
-        if (g_nd)
-            snprintf(g_info, sizeof g_info, "dev [%d/%d] master %s | pending %s %s %s",
-                     g_focus[M_DEV], g_nd,
-                     g_focus[M_DEV] < 16 ? g_macs[g_focus[M_DEV]] : "?",
-                     pm, g_pending_label, a);
+        int f = g_focus[M_DEV];
+        if (f < g_nd && g_nd)
+            snprintf(g_info, sizeof g_info, "usb [%d/%d] master %s | pending %s %s %s",
+                     f, g_nd, f < 16 ? g_macs[f] : "?", pm, g_pending_label, a);
+        else if (f >= g_nd && f < g_nd + g_nb)
+            snprintf(g_info, sizeof g_info, "bt %s via %s | replug USB to re-pair %s",
+                     g_bt[f - g_nd].uniq, g_bt[f - g_nd].phys, a);
+        else if (g_nb)
+            snprintf(g_info, sizeof g_info, "bluetooth only | pending %s %s", pm, a);
         else
-            snprintf(g_info, sizeof g_info, "no controller on USB %s", a);
+            snprintf(g_info, sizeof g_info, "no controller on USB or Bluetooth %s", a);
         break;
     }
     case M_PAIR: {
@@ -192,11 +210,11 @@ static void draw(int rows, int cols) {
         if (focused) attron(A_BOLD);
         switch (g_mode) {
         case M_DEV:
-            if (!g_nd) {
+            if (!g_nd && !g_nb) {
                 attron(A_DIM);
                 mvaddnstr(1 + r, 0, "no data", cols - 1);
                 attroff(A_DIM);
-            } else {
+            } else if (idx < g_nd) {
                 char line[192];
                 snprintf(line, sizeof line, "[%d] bus %s dev %s  %s  %s", idx,
                          g_devs[idx].bus, g_devs[idx].dev,
@@ -212,13 +230,23 @@ static void draw(int rows, int cols) {
                         if (focused) attron(A_BOLD);
                     }
                 }
+            } else {
+                char line[224];
+                btsony_dev_t *b = &g_bt[idx - g_nd];
+                snprintf(line, sizeof line, "BT %s  %s%s  via %s%s%s", b->uniq,
+                         b->name, b->motion ? " [motion]" : "",
+                         b->phys, b->js[0] ? " " : "", b->js);
+                if (g_color == 2) attron(g_green);
+                mvaddnstr(1 + r, 0, line, cols - 1);
+                if (g_color == 2) attroff(g_green);
+                if (focused) attron(A_BOLD);
             }
             break;
         case M_PAIR: {
             char pm[18] = "(none: pick from Masters/History, or e/g)", lb[80], dv[96], lc[64], hint[64];
             if (g_have_pending) mac_format(g_pending, pm);
             snprintf(lb, sizeof lb, "Label:   %s", g_pending_label);
-            snprintf(dv, sizeof dv, "Device:  [%d]%s", g_focus[M_DEV],
+            snprintf(dv, sizeof dv, "Device:  USB [%d]%s", g_usb_dev,
                      g_nd ? "" : " (none connected)");
             snprintf(lc, sizeof lc, "Local:   %s", g_local);
             const char *rows5[] = {NULL, lb, dv, lc, "Enter: pair   e: edit   g: generate   L: use local"};
@@ -459,42 +487,27 @@ int main(int argc, char **argv) {
         else if (ch == '?') help_popup();
         else if (ch == 'r') { reload_all(); snprintf(g_info, sizeof g_info, "refreshed"); }
         else if (ch == '\n' || ch == KEY_ENTER) {
-            if (g_mode == M_DEV || g_mode == M_PAIR) {
+            if (g_mode == M_PAIR) {
                 if (!g_have_pending)
                     snprintf(g_info, sizeof g_info, "no pending MAC (F3/F4 Enter, e, g, or L)");
                 else
-                    do_pair(g_focus[M_DEV], g_pending, g_pending_label);
+                    do_pair(g_usb_dev, g_pending, g_pending_label);
+            } else if (g_mode == M_DEV) {
+                int f = g_focus[M_DEV];
+                if (f >= g_nd) {
+                    snprintf(g_info, sizeof g_info, "bluetooth row: already connected; replug USB to re-pair");
+                } else if (!g_have_pending) {
+                    g_usb_dev = f;
+                    snprintf(g_info, sizeof g_info, "device [%d] selected (set pending MAC first: F3/F4 Enter, e, g, L)", f);
+                } else {
+                    g_usb_dev = f;
+                    do_pair(g_usb_dev, g_pending, g_pending_label);
+                }
             } else {
                 use_row_as_pending();
             }
         } else if (ch == 'e') edit_pending();
-        else if (ch == 'g') {
-            unsigned char mac[6];
-            if (mac_random(mac) < 0)
-                snprintf(g_info, sizeof g_info, "no entropy");
-            else {
-                char lb[64] = "generated";
-                popup("label for generated MAC", lb, sizeof lb);
-                memcpy(g_pending, mac, 6);
-                g_have_pending = 1;
-                snprintf(g_pending_label, sizeof g_pending_label, "%s", lb);
-                masters_add(mac, lb);
-                reload_store();
-            }
-        } else if (ch == 'L') {
-            unsigned char mac[6];
-            if (sixaxis_local_master(mac) < 0)
-                snprintf(g_info, sizeof g_info, "%s", sixaxis_err());
-            else {
-                memcpy(g_pending, mac, 6);
-                g_have_pending = 1;
-                snprintf(g_pending_label, sizeof g_pending_label, "local");
-                if (!g_nd)
-                    snprintf(g_info, sizeof g_info, "no device (pending set to local)");
-                else
-                    do_pair(g_focus[M_DEV], mac, "local");
-            }
-        } else if (ch == 'a') {
+        else if (ch == 'a') {
             char macb[64] = "";
             popup("new master MAC", macb, sizeof macb);
             unsigned char mac[6];
@@ -512,6 +525,23 @@ int main(int argc, char **argv) {
                 reload_store();
                 clamp_focus();
             }
+        } else if (ch == 'L') {
+            unsigned char mac[6];
+            if (sixaxis_local_master(mac) < 0)
+                snprintf(g_info, sizeof g_info, "%s", sixaxis_err());
+            else {
+                memcpy(g_pending, mac, 6);
+                g_have_pending = 1;
+                snprintf(g_pending_label, sizeof g_pending_label, "local");
+                if (g_mode == M_DEV && g_focus[M_DEV] >= g_nd) {
+                    snprintf(g_info, sizeof g_info, "bluetooth row: pending set to local; replug USB to pair");
+                } else if (!g_nd)
+                    snprintf(g_info, sizeof g_info, "no USB device (pending set to local)");
+                else {
+                    if (g_mode == M_DEV) g_usb_dev = g_focus[M_DEV];
+                    do_pair(g_usb_dev, mac, "local");
+                }
+            }
         } else if (ch == 'c') {
             if (g_mode == M_HIST) {
                 history_clear();
@@ -522,6 +552,7 @@ int main(int argc, char **argv) {
     }
     endwin();
     sixaxis_free(g_devs);
+    bt_free(g_bt);
     store_free(g_m);
     store_free(g_h);
     return 0;

@@ -2,19 +2,19 @@ CC ?= gcc
 CFLAGS ?= -O2 -Wall -Wextra -std=c99 -D_DEFAULT_SOURCE
 PREFIX ?= /usr/local
 UDEVDIR ?= /usr/lib/udev/rules.d
-CORE = sixpair_core.c mac.c store.c
+CORE = sixpair_core.c mac.c store.c btsony.c
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 xapp)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0 xapp)
 
 all: sixaxis-ctrl sixaxis-tui sixaxis-gtk
 
-sixaxis-ctrl: sixaxis-ctrl.c $(CORE) sixpair_core.h mac.h store.h
+sixaxis-ctrl: sixaxis-ctrl.c $(CORE) sixpair_core.h mac.h store.h btsony.h version.h
 	$(CC) $(CFLAGS) -o $@ sixaxis-ctrl.c $(CORE) -lusb
 
-sixaxis-tui: sixaxis-tui.c $(CORE) sixpair_core.h mac.h store.h
+sixaxis-tui: sixaxis-tui.c $(CORE) sixpair_core.h mac.h store.h btsony.h version.h
 	$(CC) $(CFLAGS) -o $@ sixaxis-tui.c $(CORE) -lusb -lncursesw
 
-sixaxis-gtk: sixaxis-gtk.c $(CORE) sixpair_core.h mac.h store.h
+sixaxis-gtk: sixaxis-gtk.c $(CORE) sixpair_core.h mac.h store.h btsony.h version.h
 	$(CC) $(CFLAGS) $(GTK_CFLAGS) -o $@ sixaxis-gtk.c $(CORE) -lusb $(GTK_LIBS)
 
 clean:

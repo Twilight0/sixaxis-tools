@@ -10,6 +10,7 @@
 #include "store.h"
 #include "mac.h"
 #include "version.h"
+#include "btsony.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -45,7 +46,24 @@ static void load_devices(void) {
     }
     if (n) gtk_combo_box_set_active(GTK_COMBO_BOX(g_combo), 0);
     sixaxis_free(devs);
-    if (!n) status("No controller found on USB busses.");
+    /* bluetooth rows appear only with hardware + daemon + live controllers */
+    char reason[128];
+    int nb = 0;
+    if (bt_available(reason, sizeof reason)) {
+        btsony_dev_t *bt = NULL;
+        nb = bt_list(&bt);
+        for (i = 0; i < nb; ++i) {
+            GtkTreeIter it;
+            char desc[192], via[96];
+            snprintf(desc, sizeof desc, "BT %s", bt[i].uniq);
+            snprintf(via, sizeof via, "via %s%s%s", bt[i].phys,
+                     bt[i].js[0] ? " " : "", bt[i].js);
+            gtk_list_store_append(g_devs, &it);
+            gtk_list_store_set(g_devs, &it, 0, desc, 1, bt[i].name, 2, via, -1);
+        }
+        bt_free(bt);
+    }
+    if (!n && !nb) status("No controller on USB or Bluetooth.");
     else status("Devices refreshed.");
 }
 

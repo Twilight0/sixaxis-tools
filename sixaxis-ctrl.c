@@ -5,6 +5,7 @@
 #include "store.h"
 #include "mac.h"
 #include "version.h"
+#include "btsony.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -12,8 +13,9 @@
 #include <time.h>
 
 static void usage(const char *p) {
-    printf("usage: %s <command> [args]\n", p);
     printf("  list [-v]                     show USB Sixaxis controllers (-v also reads masters)\n");
+    printf("                                + Bluetooth-connected ones, when present\n");
+    printf("  bt                          show Bluetooth-connected Sony controllers\n");
     printf("  show <idx>                  show current master of device\n");
     printf("  pair <MAC> [<idx>] [-n name]  set master, store history+master\n");
     printf("  local [<idx>] [-n name]     pair to local bluetooth adapter\n");
@@ -41,11 +43,35 @@ static int has_flag(int argc, char **argv, const char *flag) {
     return 0;
 }
 
+static int cmd_bt(int verbose_only) {
+    char reason[128];
+    if (!bt_available(reason, sizeof reason)) {
+        if (!verbose_only) printf("Bluetooth unavailable: %s.\n", reason);
+        return verbose_only ? 0 : 1;
+    }
+    btsony_dev_t *devs = NULL;
+    int n = bt_list(&devs);
+    if (!n) {
+        if (!verbose_only) printf("No Sony controller connected via Bluetooth.\n");
+        bt_free(devs);
+        return 0;
+    }
+    printf("Bluetooth (%d):\n", n);
+    int i;
+    for (i = 0; i < n; ++i)
+        printf("  %s  %s%s  via %s%s%s\n", devs[i].uniq,
+               devs[i].name, devs[i].motion ? " [motion]" : "",
+               devs[i].phys,
+               devs[i].js[0] ? " " : "", devs[i].js);
+    bt_free(devs);
+    return 0;
+}
+
 static int cmd_list(int verbose) {
     sixaxis_dev_t *devs = NULL;
     int n = 0;
     if (sixaxis_list(&devs, &n) < 0) { fprintf(stderr, "error: %s\n", sixaxis_err()); return 1; }
-    if (!n) { printf("No controller found on USB busses.\n"); free(devs); return 0; }
+    if (!n) { printf("No controller found on USB busses.\n"); }
     int i;
     for (i = 0; i < n; ++i) {
         print_dev(i, &devs[i]);
@@ -59,9 +85,10 @@ static int cmd_list(int verbose) {
             printf("     master: (unreadable: %s)\n", sixaxis_err());
         }
     }
-    if (!verbose)
+    if (!verbose && n)
         printf("(use 'show <idx>' to read the paired master; re-plug after read/pair as user)\n");
     sixaxis_free(devs);
+    cmd_bt(1); /* bluetooth section appears only when usable + connected */
     return 0;
 }
 
@@ -169,7 +196,6 @@ static int cmd_masters(int argc, char **argv) {
 
 static int cmd_history(int argc, char **argv) {
     const char *sub = argc >= 1 ? argv[0] : "list";
-    if (strcasecmp(sub, "clear") == 0)
         return history_clear() < 0 ? 1 : 0;
     history_entry_t *l = NULL;
     int n = 0;
@@ -202,6 +228,7 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "gen") == 0) return cmd_gen(argc - 2, argv + 2);
     if (strcmp(cmd, "masters") == 0 || strcmp(cmd, "master") == 0) return cmd_masters(argc - 2, argv + 2);
     if (strcmp(cmd, "history") == 0 || strcmp(cmd, "hist") == 0) return cmd_history(argc - 2, argv + 2);
+    if (strcmp(cmd, "bt") == 0 || strcmp(cmd, "bluetooth") == 0) return cmd_bt(0);
     if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0 || strcmp(cmd, "help") == 0) { usage(argv[0]); return 0; }
     fprintf(stderr, "unknown command '%s'\n", cmd);
     usage(argv[0]);

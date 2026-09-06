@@ -1,12 +1,15 @@
-# sixaxis-tools 0.1.0
+# sixaxis-tools 0.2.0
 
 User-mode Sony Sixaxis (PS3 controller) Bluetooth pairing, wrapping
 `sixpair.c` (same `054c:0268` / feature-report `0xF5` transfers).
 
-Three frontends, one backend (`sixpair_core.c`):
+Bluetooth-connected controllers are listed too, but only when all hold:
+bluetooth hardware present, daemon running (`bluez` installed), and at
+least one Sony controller currently connected.
+Three frontends, one backend (`sixpair_core.c` + `btsony.c`):
 
 - `sixaxis-ctrl` — pure CLI: `list [-v]`, `show`, `pair`, `local`,
-  `gen`, `masters`, `history`
+  `gen`, `masters`, `history`, `bt`
 - `sixaxis-tui` — ncurses, pulsemixer-style (`F1`-`F4` modes, `j/k`,
   `?` help)
 - `sixaxis-gtk` — GTK3 + XApp (`XAppGtkWindow`, `XAppStackSidebar`)
@@ -18,7 +21,8 @@ Known masters live in `~/.config/sixaxis/masters`, pairing log in
 
     make
 
-Needs `libusb-0.1` (`usb.h`), `ncursesw`, `gtk+-3.0`, `xapp`.
+Needs `libusb-compat` (`usb.h`), `ncurses`, `gtk3`, `xapp`; optional `bluez` for Bluetooth listing.
+
 `sudo make install` installs to `/usr/local` plus the udev rule.
 
 ## Run as user (no sudo)
